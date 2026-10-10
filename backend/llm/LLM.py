@@ -1,9 +1,9 @@
 import os
 import subprocess
-import requests
 import json
 import time
 import re
+import ollama
 from dotenv import load_dotenv
 
 # ============================================================
@@ -12,8 +12,9 @@ from dotenv import load_dotenv
 def LLM():
     load_dotenv()
 
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-    GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:14b")
+    OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+    ollama_client = ollama.Client(host=OLLAMA_HOST)
 
     # Use project directory instead of /tmp
     # Get backend directory (parent of llm directory)
@@ -40,8 +41,8 @@ def LLM():
     LLM_REPORTS_DIR = os.path.join(BASE_DIR, "llm")
     os.makedirs(LLM_REPORTS_DIR, exist_ok=True)
     
-    REPORT_TEXT = os.path.join(LLM_REPORTS_DIR, "Gemini_Report.txt")
-    REPORT_JSON = os.path.join(LLM_REPORTS_DIR, "Gemini_Review.json")
+    REPORT_TEXT = os.path.join(LLM_REPORTS_DIR, "LLM_Report.txt")
+    REPORT_JSON = os.path.join(LLM_REPORTS_DIR, "LLM_Review.json")
 
     # ============================================================
     # CHECK IF EXECUTABLES EXIST
@@ -157,99 +158,59 @@ def LLM():
             return False
 
     # ============================================================
-    # GEMINI API CALL (FIXED WITH TIMEOUT & ERROR HANDLING)
+    # OLLAMA CALL (LOCAL LLM WITH TIMEOUT & ERROR HANDLING)
     # ============================================================
 
-    def call_gemini_api(prompt, retries=3, initial_delay=5):
-        headers = {
-            "Content-Type": "application/json",
-            "x-goog-api-key": GEMINI_API_KEY
-        }
-
-        body = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "maxOutputTokens": 6000,
-                "temperature": 0.3
-            }
-        }
-
+    def call_ollama(prompt, retries=3, initial_delay=2):
         delay = initial_delay
-        
+
         for attempt in range(1, retries + 1):
-            print(f"🌐 Calling Gemini API (attempt {attempt}/{retries})...")
-            
+            print(f"🌐 Calling Ollama ({OLLAMA_MODEL}) (attempt {attempt}/{retries})...")
+
             try:
-                response = requests.post(
-                    GEMINI_ENDPOINT,
-                    headers=headers,
-                    json=body,
-                    timeout=60  # 60 second timeout for API call
+                response = ollama_client.chat(
+                    model=OLLAMA_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    options={
+                        "temperature": 0.3,
+                        "num_predict": 2048,
+                    },
                 )
 
-                if response.status_code == 200:
-                    print("✅ Gemini API responded successfully")
-                    data = response.json()
-                    
-                    try:
-                        candidates = data.get("candidates", [])
-                        if not candidates:
-                            return "⚠️ No response candidates found.", data
+                print("✅ Ollama responded successfully")
+                content = response.get("message", {}).get("content", "")
+                if not content:
+                    return "⚠️ Ollama returned no readable text.", response
+                return content, response
 
-                        content = candidates[0].get("content", {})
-                        parts = content.get("parts", [])
-                        all_text = [p["text"] for p in parts if "text" in p]
-
-                        if not all_text and "output_text" in candidates[0]:
-                            all_text.append(candidates[0]["output_text"])
-
-                        final_text = "\n".join(all_text) if all_text else "⚠️ Gemini returned no readable text."
-                        return final_text, data
-
-                    except Exception as e:
-                        print(f"⚠️ Error parsing Gemini response: {e}")
-                        return f"⚠️ Parsing error: {e}\nRaw data:\n{json.dumps(data, indent=2)}", data
-
-                elif response.status_code in (429, 503):
-                    print(f"⚠️ Gemini busy (status {response.status_code}). Retrying in {delay}s... ({attempt}/{retries})")
-                    if attempt < retries:
-                        time.sleep(delay)
-                        delay *= 2  # Exponential backoff
-                    continue
-                    
-                elif response.status_code == 400:
-                    print(f"❌ Bad request to Gemini API: {response.text}")
-                    return f"⚠️ Invalid request to Gemini: {response.text}", {}
-                    
-                else:
-                    print(f"❌ Gemini API Error {response.status_code}: {response.text}")
-                    if attempt < retries:
-                        time.sleep(delay)
-                        continue
-                    return f"⚠️ Gemini API Error {response.status_code}", {}
-
-            except requests.exceptions.Timeout:
-                print(f"⏱️ Request timed out (attempt {attempt}/{retries})")
+            except ollama.ResponseError as e:
+                print(f"❌ Ollama response error: {e}")
+                if e.status_code == 404:
+                    return (
+                        f"⚠️ Model '{OLLAMA_MODEL}' not found. "
+                        f"Run: ollama pull {OLLAMA_MODEL}",
+                        {},
+                    )
                 if attempt < retries:
                     time.sleep(delay)
+                    delay *= 2
                     continue
-                return "⚠️ Gemini API timed out after multiple attempts", {}
-                
-            except requests.exceptions.ConnectionError as e:
-                print(f"🔌 Connection error (attempt {attempt}/{retries}): {e}")
-                if attempt < retries:
-                    time.sleep(delay)
-                    continue
-                return "⚠️ Could not connect to Gemini API", {}
-                
+                return f"⚠️ Ollama error: {e}", {}
+
             except Exception as e:
-                print(f"❌ Unexpected error calling Gemini: {e}")
+                # Connection errors (Ollama server not running) land here
+                print(f"🔌 Ollama connection/runtime error (attempt {attempt}/{retries}): {e}")
                 if attempt < retries:
                     time.sleep(delay)
+                    delay *= 2
                     continue
-                return f"⚠️ Unexpected error: {str(e)}", {}
+                return (
+                    f"⚠️ Could not reach Ollama at {OLLAMA_HOST}. "
+                    f"Is it running? Start it with: ollama serve",
+                    {},
+                )
 
-        return "⚠️ Gemini API unavailable after multiple retries", {}
+        return "⚠️ Ollama unavailable after multiple retries", {}
     # ============================================================
     # PARSING HELPERS
     # ============================================================
@@ -271,26 +232,32 @@ def LLM():
 
         return {"summary": summary_line, "status": status}
 
-    import re
-
     def extract_suggestions(review_text):
-        # Find all text enclosed between $$ ... $$ after $Suggestions:
-        match = re.search(r"\$Suggestions:\$[\s\\n]*", review_text)
-        if match:
-            # Extract all $$ ... $$ blocks
-            suggestions = re.findall(r"\$(.*?)\$", review_text, re.DOTALL)
-            # Clean up each suggestion (remove whitespace and bullets)
+        # Capture the block between $Suggestions:$ and $Optimization:$ (or EOF)
+        match = re.search(
+            r"\$Suggestions:\$(.*?)(?:\$Optimization:\$|\Z)",
+            review_text,
+            re.DOTALL | re.IGNORECASE,
+        )
+        if not match:
+            return []
+
+        block = match.group(1)
+
+        # Prefer explicit $...$ delimiters, else fall back to bullet lines
+        suggestions = re.findall(r"\$(.+?)\$", block, re.DOTALL)
+        if not suggestions:
             suggestions = [
-                re.sub(r"^\s*[-*•]?\s*", "", s.strip())
-                for s in suggestions if s.strip()
+                line for line in block.splitlines() if line.strip()
             ]
-            return suggestions[1:len(suggestions) - 1]
-        return []
 
-
+        return [
+            re.sub(r"^\s*[-*•]?\s*", "", s.strip())
+            for s in suggestions if s.strip()
+        ]
 
     def extract_tac_code(review_text):
-    # Find the $Optimization:$ header and capture everything after it
+        # Find the $Optimization:$ header and capture everything after it
         match = re.search(
             r"\$Optimization:\$\s*\n(.*)",
             review_text,
@@ -306,7 +273,7 @@ def LLM():
 
 
     # ============================================================
-    # GEMINI REVIEW FUNCTION (WITH FALLBACK)
+    # LLM REVIEW FUNCTION (OLLAMA)
     # ============================================================
 
     def review_output_file():
@@ -317,36 +284,40 @@ def LLM():
         with open(OUTPUT_FILE, "r") as f:
             optimized_code = f.read()
 
-        prompt = f"""
-    You are an expert compiler engineer reviewing optimized three-address code (TAC).
+        prompt = f"""You are an expert compiler engineer reviewing optimized three-address code (TAC).
 
-    Analyze the code below and respond briefly:
-    1. Verify if semantics are preserved (no logic change).
-    2. Mention unsafe optimizations, if any.
-    3. Suggest at most 3 further optimizations (clear, one-liners).
-    4. Use short bullet points only — no long explanations.
-    5. End with one summary line:
-    → "✅ Optimization Correct" or "⚠️ Issues Found: <reason>"
+Analyze the TAC below and reply using EXACTLY the format shown. Do not use markdown code fences.
 
-    --- Optimized TAC ---
-    {optimized_code}
+NOTES
+- <0 to 3 short bullet points on semantics and any unsafe optimizations>
 
-    Format your output as:
-    - ✅/⚠️ statements
-    - 2–4 bullet points only
-    Keep the total output under 6 lines (suitable for frontend card view).
-    Dont use any emojis.
-    Give suggestions with the heading "$Suggestions:$" and enclose each suggestions like "$...$" compulsorily.
-    Also compulsorily generate your version of the optimized three address code with the heading: "$Optimization:$" in the end of the summary.
-    All the optimized code must be in newlines. 
-    """
+$Suggestions:$
+$<suggestion 1>$
+$<suggestion 2>$
 
-        print("🤖 Sending optimized TAC to Gemini...\n")
-        
+SUMMARY
+<one line: "✅ Optimization Correct" or "⚠️ Issues Found: <reason>">
+
+$Optimization:$
+<your optimized TAC, one instruction per line>
+
+Rules:
+- Keep NOTES to at most 3 one-line bullets.
+- Each suggestion must be wrapped in $...$ on its own line under the "$Suggestions:$" heading.
+- Put your optimized TAC after the "$Optimization:$" heading, one instruction per line.
+- The "$Optimization:$" block must be the LAST thing in your reply.
+- End your review with a single SUMMARY line using the ✅ or ⚠️ marker.
+
+--- Optimized TAC ---
+{optimized_code}
+"""
+
+        print("🤖 Sending optimized TAC to Ollama...\n")
+
         try:
-            review_text, raw_json = call_gemini_api(prompt)
+            review_text, raw_json = call_ollama(prompt)
 
-            print("\n=== Gemini Review ===\n")
+            print("\n=== Ollama Review ===\n")
             print(review_text)
 
             summary_info = extract_summary(review_text)
@@ -380,7 +351,7 @@ def LLM():
     # MAIN EXECUTION LOGIC
     # ============================================================
     print("========================================================")
-    print("  Gemini Review Automation for C Optimizer Project       ")
+    print("  Ollama Review Automation for C Optimizer Project      ")
     print("========================================================\n")
 
     if run_c_compiler() and run_c_optimizer():

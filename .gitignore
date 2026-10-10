@@ -1,0 +1,54 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment variables / secrets
+.env
+.env.local
+*.env
+!backend/.env.example
+
+# Python (backend)
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# Node (frontend)
+node_modules/
+dist/
+dist-ssr/
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+*.local
+
+# C compiler / optimizer artifacts
+backend/compiler/compiler
+backend/compiler/optimizer
+backend/compiler/source.c
+backend/compiler/IR.txt
+backend/compiler/Output.txt
+
+# LLM output artifacts
+backend/llm/LLM_Report.txt
+backend/llm/LLM_Review.json
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
